@@ -162,6 +162,7 @@ def test_filterbank_matches_essentia_melbands():
         e = np.zeros(257, np.float32)
         e[j] = 1.0
         ref[:, j] = mb(e)
+    # bit-exact on glibc; another libm's expf/logf could move a band edge by 1 ulp, i.e. ~1e-7 in a weight
     assert np.abs(ref - m.filterbank()).max() <= 1e-6
 
 

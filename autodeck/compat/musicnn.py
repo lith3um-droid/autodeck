@@ -16,12 +16,14 @@ librosa's: MelBands walks the 98 band edges by *accumulating* the mel increment 
 (melbands.cpp calculateFilterFrequencies), which drifts ~0.01 Hz from a linspace by the top band,
 and TriangularBands (triangularbands.cpp createFilters) evaluates the triangles only on the FFT
 bins inside [edge_i, edge_i+2] with "unit_tri" scaling by the triangle's theoretical area. Those
-float32 steps are reproduced here with numpy float32 scalars, so the filterbank, the window and
-the frame positions match essentia to the bit.
+float32 steps are reproduced here with numpy float32 scalars (and correctly rounded expf/logf), so the
+filterbank, the window and the frame positions match essentia to the bit (checked in the tests).
 
 What cannot be bit-exact: essentia's FFT (KissFFT/FFTW in float32) and its sequential float32
 band sums; this port uses numpy's float64 FFT and a float64 matmul. The remaining difference is
-essentia's own rounding noise (observed max abs error ~1e-5 on log-mel values; the tests allow 1e-3).
+essentia's own float32 rounding noise: max abs error below 1e-5 on music-like signals and 3.4e-5 on a
+pure sine sweep, whose strong single tone leaves the far-off bins at the float32 FFT noise floor
+(the tests allow 1e-3).
 """
 import math
 
@@ -44,7 +46,9 @@ def _hz2mel_slaney(hz: np.float32) -> np.float32:
         return hz * lin_slope
     min_log_mel = min_log_hz * lin_slope
     log_step = _f32(math.log(6.4) / 27.0)  # computed in double, stored as Real
-    return min_log_mel + np.log(hz / min_log_hz) / log_step
+    # glibc logf/expf (what essentia calls) are correctly rounded; numpy's float32 log/exp SIMD kernels
+    # are off by up to 2 ulp, which moves band edges by ~1e-4 Hz. Round the double result instead.
+    return min_log_mel + _f32(math.log(float(hz / min_log_hz))) / log_step
 
 
 def _mel2hz_slaney(mel: np.float32) -> np.float32:
@@ -53,7 +57,7 @@ def _mel2hz_slaney(mel: np.float32) -> np.float32:
     if mel < min_log_mel:
         return mel / lin_slope
     log_step = _f32(math.log(6.4) / 27.0)
-    return min_log_hz * np.exp((mel - min_log_mel) * log_step)
+    return min_log_hz * _f32(math.exp(float((mel - min_log_mel) * log_step)))
 
 
 def filter_frequencies() -> np.ndarray:

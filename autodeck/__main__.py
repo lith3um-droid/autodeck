@@ -12,6 +12,8 @@ HOST, PORT = "127.0.0.1", 8765  # loopback only: nothing is ever exposed to the 
 
 
 def main() -> None:
+    config.ensure_tools_on_path()  # Windows: rubberband.exe fetched by scripts/get_rubberband.py
+    config.ensure_ca_bundle()  # HTTPS downloads verify against certifi, not only the OS store
     url = f"http://{HOST}:{PORT}/"
     # AUTODECK_NO_BROWSER=1 skips the browser (smoke tests, headless runs).
     if not os.environ.get("AUTODECK_NO_BROWSER"):

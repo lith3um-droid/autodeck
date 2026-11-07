@@ -1432,11 +1432,19 @@ export function lastfmState(lf) {
   return { text: `Set · ends in …${lf.hint}${from}`, cls: 'set', removable: lf.source === 'settings' };
 }
 const BROWSER_NAME = { chrome: 'Chrome', safari: 'Safari', firefox: 'Firefox', brave: 'Brave', edge: 'Edge' };
-/** What Settings says under "YouTube login from", from GET /api/settings' `youtube`. */
+/** What Settings says under "YouTube login from", from GET /api/settings' `youtube` (`platform` is
+ * Python's sys.platform: how yt-dlp gets at the login differs per OS; absent = macOS, the original). */
 export function browserNote(yt) {
   if (yt?.from_env) return `Set to "${yt.browser}" by the AUTODECK_BROWSER environment variable, which wins over this choice`;
   if (!yt || yt.browser === 'none') return 'No login: public videos and playlists work, Liked Music does not';
   const name = BROWSER_NAME[yt.browser] ?? yt.browser;
+  if (yt.platform === 'win32') {
+    // Chromium browsers on Windows (Chrome 127+, Edge, Brave) lock their cookies with app-bound
+    // encryption that yt-dlp can't undo from another process; Firefox's cookie file reads fine.
+    if (yt.browser === 'firefox') return 'Uses your Firefox login';
+    return `Uses your ${name} login. ${name} on Windows encrypts its cookies in a way yt-dlp often can't read: if logins fail, pick Firefox or none`;
+  }
+  if (yt.platform && yt.platform !== 'darwin') return `Uses your ${name} login`;
   // Safari keeps its cookies in a protected folder; the other browsers' are behind a Keychain prompt.
   if (yt.browser === 'safari') return 'Uses your Safari login. autodeck needs Full Disk Access (System Settings → Privacy & Security) to read it';
   return `Uses your ${name} login. macOS asks once for Keychain access: click Always Allow`;
@@ -1466,6 +1474,7 @@ function showSettings(st) {
   }
   if (st.youtube) {
     $('#yt-browser').value = st.youtube.browser;
+    for (const o of $('#yt-browser').options) if (o.value === 'safari') o.hidden = o.disabled = !!st.youtube.platform && st.youtube.platform !== 'darwin'; // Safari exists only on macOS
     $('#yt-browser').disabled = st.youtube.from_env; // the env var wins; changing it here would do nothing
     $('#yt-state').replaceChildren(icon('info'), browserNote(st.youtube));
   }

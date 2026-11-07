@@ -164,11 +164,24 @@ def _tempo_fallback(y: np.ndarray) -> float:
         return FALLBACK_BPM
 
 
-def _key(y: np.ndarray) -> tuple[str | None, str | None]:
+def _essentia():
+    """essentia.standard, or None where essentia has no wheels (Windows): autodeck.compat then
+    stands in with ports of the same algorithms, checked against essentia."""
     try:
         import essentia.standard as es
+        return es
+    except ImportError:
+        return None
 
-        k, scale, _ = es.KeyExtractor(profileType="edma", sampleRate=SR)(y.astype(np.float32))
+
+def _key(y: np.ndarray) -> tuple[str | None, str | None]:
+    try:
+        es = _essentia()
+        if es is not None:
+            k, scale, _ = es.KeyExtractor(profileType="edma", sampleRate=SR)(y.astype(np.float32))
+        else:
+            from .compat.key import key_extractor
+            k, scale, _ = key_extractor(y.astype(np.float32), SR, profile_type="edma")
         key = f"{k} {scale}"
         return key, to_camelot(key)
     except Exception:
@@ -336,7 +349,12 @@ def danceability(audio_path: Path) -> float:
     Raw values on real music span ~0.9 (a church chant) to ~1.6 (a sârba, house, B.U.G. Mafia)
     (measured on the owner's library, 2026-10-30), so that range maps to 0..1.
     """
-    import essentia.standard as es
-    y = es.MonoLoader(filename=str(audio_path), sampleRate=44100)()
-    d, _ = es.Danceability(sampleRate=44100)(y)
+    es = _essentia()
+    if es is not None:
+        y = es.MonoLoader(filename=str(audio_path), sampleRate=44100)()
+        d, _ = es.Danceability(sampleRate=44100)(y)
+    else:
+        from .compat.danceability import danceability as dfa_danceability
+        y, _ = librosa.load(audio_path, sr=44100, mono=True)  # what MonoLoader does: a mono mix at 44.1 kHz
+        d, _ = dfa_danceability(y.astype(np.float32), 44100)
     return float(min(1.0, max(0.0, (d - 0.9) / 0.7)))

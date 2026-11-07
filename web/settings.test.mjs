@@ -30,6 +30,15 @@ test('YouTube login note: env var wins, none = public only, Safari needs Full Di
   assert.match(browserNote({ browser: 'brave', from_env: false }), /Brave login.*Keychain/);
 });
 
+test('YouTube login note per OS: no Keychain outside macOS, Chromium cookies are locked on Windows', () => {
+  assert.match(browserNote({ browser: 'chrome', from_env: false, platform: 'win32' }), /Chrome on Windows encrypts.*Firefox/);
+  assert.equal(browserNote({ browser: 'firefox', from_env: false, platform: 'win32' }), 'Uses your Firefox login');
+  assert.doesNotMatch(browserNote({ browser: 'edge', from_env: false, platform: 'win32' }), /Keychain/);
+  assert.equal(browserNote({ browser: 'chrome', from_env: false, platform: 'linux' }), 'Uses your Chrome login');
+  assert.match(browserNote({ browser: 'brave', from_env: false, platform: 'darwin' }), /Keychain/);
+  assert.match(browserNote({ browser: 'none', from_env: false, platform: 'win32' }), /public/);
+});
+
 test('Installation line: repair only in the standalone app', () => {
   assert.deepEqual(runtimeNote({ standalone: false, python: '3.12.9' }), { text: 'Running from the repo (Python 3.12.9)', repair: false });
   const r = runtimeNote({ standalone: true, python: '3.12.9', app_version: '0.1.0', size: 1.234e9 });

@@ -1,5 +1,9 @@
 import pytest
 
+from autodeck import config
+
+config.ensure_tools_on_path()  # Windows: rubberband.exe fetched by scripts/get_rubberband.py
+
 
 @pytest.fixture
 def tmp_library(tmp_path, monkeypatch):

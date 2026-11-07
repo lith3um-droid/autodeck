@@ -1,7 +1,7 @@
-"""autodeck as a native macOS window: `uv run python -m autodeck.desktop`.
+"""autodeck as a native window (WKWebView on macOS, Edge WebView2 on Windows): `uv run python -m autodeck.desktop`.
 
 Runs the engine (the same FastAPI app as `python -m autodeck`) on a background thread and shows
-the UI in a WKWebView window via pywebview, so there's no browser tab to close by accident or to
+the UI in a WKWebView / WebView2 window via pywebview, so there's no browser tab to close by accident or to
 be throttled in the background. Closing the window stops the engine.
 
 Two app bundles run this: the thin launcher (scripts/make_mac_app.sh, the repo via uv) and the
@@ -111,7 +111,25 @@ class SetupApi:
         self._window.load_url(URL)
 
 
+def _hide_child_consoles() -> None:
+    """Windows: the window runs under pythonw (no console), so every console child (rubberband from
+    pyrubberband, ffmpeg from yt-dlp, uv during setup) would flash a black window. CREATE_NO_WINDOW
+    on every Popen keeps them hidden; pipes and exit codes work as before."""
+    if sys.platform != "win32":
+        return
+    import subprocess
+    original = subprocess.Popen.__init__
+
+    def init(self, *args, **kwargs):
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+        original(self, *args, **kwargs)
+    subprocess.Popen.__init__ = init
+
+
 def main() -> None:
+    config.ensure_tools_on_path()  # Windows dev: rubberband.exe fetched by scripts/get_rubberband.py
+    config.ensure_ca_bundle()  # HTTPS downloads verify against certifi, not only the OS store
+    _hide_child_consoles()
     webview_storage = config.app_home() / "webview"
     if standalone.ACTIVE:
         standalone.environment()

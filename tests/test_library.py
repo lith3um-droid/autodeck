@@ -1,5 +1,6 @@
 import json
 import shutil
+import sys
 
 from autodeck import library
 from autodeck.library import Analysis, Section, Song
@@ -8,7 +9,12 @@ from autodeck.library import Analysis, Section, Song
 def test_heavy_deps_import():
     # Smoke test: these are the packages most likely to break on arm64 / py3.12.
     import beat_this.inference  # noqa: F401
-    import essentia.standard  # noqa: F401
+    if sys.platform == "win32":  # no essentia wheels: the ports in autodeck/compat stand in
+        import autodeck.compat.danceability  # noqa: F401
+        import autodeck.compat.key  # noqa: F401
+        import autodeck.compat.musicnn  # noqa: F401
+    else:
+        import essentia.standard  # noqa: F401
     import faster_whisper  # noqa: F401
     import onnxruntime  # noqa: F401
     import imageio_ffmpeg  # noqa: F401

@@ -8,6 +8,7 @@ deadlock; reusing the same RLock can't.
 import json
 import os
 import re
+import sys
 import logging
 import threading
 import time
@@ -1146,7 +1147,9 @@ class Engine:
         return {"lastfm": {"set": bool(key), "hint": key[-4:] if key else None, "source": lastfm.key_source()},
                 "library": lib,
                 # from_env: AUTODECK_BROWSER overrides the saved choice, so the page says so.
-                "youtube": {"browser": config.youtube_browser(), "from_env": bool(os.environ.get("AUTODECK_BROWSER"))},
+                "youtube": {"browser": config.youtube_browser(), "from_env": bool(os.environ.get("AUTODECK_BROWSER")),
+                            # the page words the login note per OS (Keychain on macOS, cookie encryption on Windows)
+                            "platform": sys.platform},
                 "runtime": standalone.status()}
 
     def repair_install(self) -> dict:

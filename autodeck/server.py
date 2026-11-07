@@ -198,8 +198,8 @@ def relaunch() -> None:
     import threading
 
     from . import standalone
-    app_path = standalone.resources().parent.parent  # .../autodeck.app
-    subprocess.Popen(["/bin/sh", "-c", f'sleep 2; /usr/bin/open "{app_path}"'], start_new_session=True)
+    cmd, detach = standalone.relaunch_command()
+    subprocess.Popen(cmd, **detach)
 
     def close():
         import webview

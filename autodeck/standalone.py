@@ -1,18 +1,20 @@
 """The standalone autodeck.app: first-launch setup and the runtime environment.
 
-The app bundle is small (~40 MB DMG): a Python runtime, uv, the rubberband CLI and autodeck's
-own source + uv.lock. Everything heavy is installed on first launch into
-~/Library/Application Support/autodeck/ (config.app_home()):
+The app bundle is small (~40 MB DMG; a ~60 MB zip on Windows): a Python runtime, uv, the
+rubberband CLI and autodeck's own source + uv.lock. Everything heavy is installed on first launch
+into config.app_home() (~/Library/Application Support/autodeck/ on macOS, %LOCALAPPDATA%\autodeck
+on Windows):
 
     runtime/python/   copy of the bundled Python (the venv must not point into the .app,
                       which can be moved or replaced by an update)
     runtime/venv/     `uv sync --frozen --no-dev` against the bundled uv.lock: exact pinned
-                      versions, hashes verified by uv
-    runtime/bin/      ffmpeg -> the imageio-ffmpeg wheel's binary (deno is in venv/bin)
+                      versions, hashes verified by uv (venv/bin; venv/Scripts on Windows)
+    runtime/bin/      ffmpeg -> the imageio-ffmpeg wheel's binary (a copy on Windows; deno is in the venv)
     runtime/setup.json  marker: app version, lock hash, Python version; written last
     models/           beat_this, Discogs-EffNet, Whisper tiny, htdemucs (pinned URLs + sha256)
 
-Launch sequence (Contents/MacOS/autodeck is a shell script):
+Launch sequence (Contents/MacOS/autodeck is a shell script; on Windows autodeck.cmd next to
+Resources/ does the same with pythonw.exe, see scripts/build_standalone_windows.py):
   1. bootstrap(), on the bundled Python, stdlib only: copy Python, then `uv sync --only-group ui`
      (pywebview + pyobjc, ~15 MB) so a window can be shown, then exec the venv's Python.
   2. desktop.main() on the venv's Python: environment(), then the "Setting up autodeck" window
@@ -41,6 +43,11 @@ from . import config
 RESOURCES = os.environ.get("AUTODECK_RESOURCES")
 ACTIVE = bool(RESOURCES)
 PY = f"python{sys.version_info.major}.{sys.version_info.minor}"
+WIN = sys.platform == "win32"
+EXE = ".exe" if WIN else ""
+# Windows: the app runs under pythonw (no console), so a console child (uv here; rubberband and
+# ffmpeg later, see desktop.py) would pop up a black window each time. Harmless from a terminal.
+QUIET = {"creationflags": subprocess.CREATE_NO_WINDOW} if WIN else {}
 
 # (path under models/, URL, sha256, bytes). Hashes pinned from the files themselves (the
 # Whisper one is also Hugging Face's LFS id); a mismatch is treated as a failed download.
@@ -82,7 +89,26 @@ def runtime() -> Path:
 
 
 def venv_python() -> Path:
-    return runtime() / "venv" / "bin" / PY
+    return runtime() / "venv" / ("Scripts/python.exe" if WIN else f"bin/{PY}")
+
+
+def venv_pythonw() -> Path:
+    """The interpreter the app itself runs on: pythonw on Windows (no console window)."""
+    return runtime() / "venv" / ("Scripts/pythonw.exe" if WIN else f"bin/{PY}")
+
+
+def venv_bin() -> Path:
+    """The venv's console scripts and tool binaries (deno)."""
+    return runtime() / "venv" / ("Scripts" if WIN else "bin")
+
+
+def site_packages() -> Path:
+    return runtime() / "venv" / ("Lib/site-packages" if WIN else f"lib/{PY}/site-packages")
+
+
+def runtime_python() -> Path:
+    """The copy of the bundled interpreter the venv is built on."""
+    return runtime() / "python" / ("python.exe" if WIN else f"bin/{PY}")
 
 
 def marker_file() -> Path:
@@ -230,27 +256,27 @@ def uv_env() -> dict:
     return {**os.environ,
             "UV_PROJECT_ENVIRONMENT": str(runtime() / "venv"),
             "UV_CACHE_DIR": str(caches / "uv"),
-            "UV_PYTHON": str(runtime() / "python" / "bin" / PY),
+            "UV_PYTHON": str(runtime_python()),
             "UV_PYTHON_DOWNLOADS": "never",  # use our Python, never fetch another
-            "UV_NO_CONFIG": "1",             # ignore any uv.toml on this Mac
+            "UV_NO_CONFIG": "1",             # ignore any uv.toml on this machine
             "NO_COLOR": "1"}
 
 
 def uv_cmd(*args: str) -> list[str]:
-    return [str(resources() / "bin" / "uv"), "sync", "--project", str(app_dir()), "--frozen", *args]
+    return [str(resources() / "bin" / ("uv" + EXE)), "sync", "--project", str(app_dir()), "--frozen", *args]
 
 
 def _python_copied() -> bool:
-    py = runtime() / "python" / "bin" / PY
     stamp = runtime() / "python" / ".from"
-    return py.exists() and stamp.exists() and stamp.read_text() == platform.python_version()
+    return runtime_python().exists() and stamp.exists() and stamp.read_text() == platform.python_version()
 
 
 def bootstrap() -> None:
     """Contents/MacOS/autodeck runs this on the bundled Python. Never returns."""
     rt = runtime()
     rt.mkdir(parents=True, exist_ok=True)
-    log = open(Path.home() / "Library" / "Logs" / "autodeck.log", "a", buffering=1)  # noqa: SIM115
+    config.log_file().parent.mkdir(parents=True, exist_ok=True)
+    log = open(config.log_file(), "a", buffering=1, encoding="utf-8")  # noqa: SIM115
     print(f"--- {time.ctime()} autodeck {resources()}", file=log)
     if not _python_copied():
         # Copy, don't point at the bundle: the venv must survive the app being moved/updated.
@@ -262,20 +288,37 @@ def bootstrap() -> None:
         shutil.rmtree(rt / "python", ignore_errors=True)
         shutil.rmtree(rt / "venv", ignore_errors=True)  # its interpreter is gone
         os.replace(tmp, rt / "python")
-    if not venv_python().exists() or not list((rt / "venv" / "lib" / PY / "site-packages").glob("webview")):
+    if not venv_python().exists() or not list(site_packages().glob("webview")):
         # Just enough for the setup window. No window yet, so say something in Notification Center.
-        subprocess.run(["/usr/bin/osascript", "-e", 'display notification "Preparing first launch…" with title "autodeck"'],
-                       check=False)
-        r = subprocess.run(uv_cmd("--only-group", "ui", "--inexact"), env=uv_env(), stdout=log, stderr=log)
+        _notify("Preparing first launch…")
+        r = subprocess.run(uv_cmd("--only-group", "ui", "--inexact"), env=uv_env(), stdout=log, stderr=log, **QUIET)
         if r.returncode != 0:
-            subprocess.run(["/usr/bin/osascript", "-e",
-                            'display alert "autodeck couldn\'t start setup" message "Is this Mac online? '
-                            'Details: ~/Library/Logs/autodeck.log"'], check=False)
+            _alert("autodeck couldn't start setup", f"Is this computer online? Details: {config.log_file()}")
             sys.exit(1)
     log.close()
-    os.execv(str(venv_python()), [str(venv_python()), *python_flags(), "-c",
-                                  "import sys; sys.path.insert(0, sys.argv[1]); "
-                                  "from autodeck.desktop import main; main()", str(app_dir())])
+    argv = [str(venv_pythonw()), *python_flags(), "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); from autodeck.desktop import main; main()", str(app_dir())]
+    if WIN:  # no real exec on Windows: run the app as a child and pass its exit code on
+        sys.exit(subprocess.call(argv))
+    os.execv(argv[0], argv)
+
+
+def _notify(text: str) -> None:
+    """A passing notification before any window exists (macOS Notification Center; Windows has
+    no equivalent without extra packages, and the setup window follows within seconds)."""
+    if sys.platform == "darwin":
+        subprocess.run(["/usr/bin/osascript", "-e", f'display notification "{text}" with title "autodeck"'], check=False)
+
+
+def _alert(title: str, text: str) -> None:
+    """A modal error box before any window exists."""
+    if WIN:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, text, title, 0x10)  # MB_ICONERROR
+    elif sys.platform == "darwin":
+        subprocess.run(["/usr/bin/osascript", "-e", f'display alert "{title}" message "{text}"'], check=False)
+    else:
+        print(f"{title}: {text}", file=sys.stderr)
 
 
 def python_flags() -> list[str]:
@@ -284,23 +327,33 @@ def python_flags() -> list[str]:
     return ["-I", "-X", f"pycache_prefix={config.caches_dir() / 'pycache'}"]
 
 
+def relaunch_command() -> tuple[list[str], dict]:
+    """A detached shell that reopens the app 2 s after this process has quit (Settings -> Repair):
+    the command and the Popen keyword arguments that detach it from us."""
+    root = resources().parent  # Contents/ in autodeck.app; the unzipped app folder on Windows
+    if WIN:  # a hidden console (timeout needs one), its own process group: our exit never takes it down
+        return (["cmd", "/c", f'timeout /t 2 /nobreak >nul & start "" "{root / "autodeck.cmd"}"'],
+                {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP})
+    return ["/bin/sh", "-c", f'sleep 2; /usr/bin/open "{root.parent}"'], {"start_new_session": True}
+
+
 # --- step 2: the environment of the running app (venv Python) -------------------------------
 def environment() -> None:
     """PATH for the tools, writable caches, logging, CA certificates, yt-dlp updates."""
     import logging
 
-    logs = Path.home() / "Library" / "Logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    out = open(logs / "autodeck.log", "a", buffering=1, encoding="utf-8")  # noqa: SIM115 (lives as long as the app)
+    config.log_file().parent.mkdir(parents=True, exist_ok=True)
+    out = open(config.log_file(), "a", buffering=1, encoding="utf-8")  # noqa: SIM115 (lives as long as the app)
     sys.stdout = sys.stderr = out
     import faulthandler
     faulthandler.enable(out)  # a native crash (torch, essentia, numba) leaves a traceback in the log
     logging.basicConfig(stream=out, level=logging.WARNING, format="%(asctime)s %(name)s: %(message)s")
 
     rt = runtime()
-    # Ours first (rubberband in the app, ffmpeg, deno in the venv); /usr/bin:/bin for the rest.
-    os.environ["PATH"] = os.pathsep.join([str(resources() / "bin"), str(rt / "bin"), str(rt / "venv" / "bin"),
-                                          "/usr/bin:/bin:/usr/sbin:/sbin"])
+    # Ours first (rubberband in the app, ffmpeg, deno in the venv); then /usr/bin:/bin for the rest on
+    # macOS, or the system PATH on Windows (System32 and the WebView2 runtime must stay reachable).
+    rest = os.environ.get("PATH", "") if WIN else "/usr/bin:/bin:/usr/sbin:/sbin"
+    os.environ["PATH"] = os.pathsep.join([str(resources() / "bin"), str(rt / "bin"), str(venv_bin()), rest])
     caches = config.caches_dir()
     for var, sub in (("NUMBA_CACHE_DIR", "numba"), ("MPLCONFIGDIR", "matplotlib"),
                      ("TORCH_HOME", "torch"), ("HF_HOME", "huggingface")):
@@ -311,14 +364,26 @@ def environment() -> None:
 def after_packages() -> None:
     """The parts of the environment that need the installed packages: at every launch, and on
     first launch again right after setup installed them."""
+    # First launch: setup installed the packages into this very process's venv. Dirs that new
+    # .pth files add (pywin32's win32/ and win32/lib, which numba imports on Windows) and new
+    # packages in already-cached directories are picked up only if asked; without this the
+    # engine import failed with "No module named pywintypes" and Retry could not fix it.
+    import importlib
+    import site
+    site.addsitedir(str(site_packages()))
+    importlib.invalidate_caches()
     rt = runtime()
-    ff = sorted((rt / "venv" / "lib" / PY / "site-packages" / "imageio_ffmpeg" / "binaries").glob("ffmpeg-*"))
+    ff = sorted((site_packages() / "imageio_ffmpeg" / "binaries").glob("ffmpeg-*"))
     if ff:  # yt-dlp and audioread look for a program called "ffmpeg" on PATH
-        (rt / "bin").mkdir(exist_ok=True)
-        link = rt / "bin" / "ffmpeg"
-        if not link.is_symlink() or os.readlink(link) != str(ff[-1]):
+        (rt / "bin").mkdir(parents=True, exist_ok=True)
+        link = rt / "bin" / ("ffmpeg" + EXE)
+        if WIN:  # a symlink needs developer mode or admin rights on Windows: copy it once (~90 MB)
+            if not link.exists() or link.stat().st_size != ff[-1].stat().st_size:
+                shutil.copy2(ff[-1], link)
+        elif not link.is_symlink() or os.readlink(link) != str(ff[-1]):
             link.unlink(missing_ok=True)
             link.symlink_to(ff[-1])
+    config.ensure_ca_bundle()  # Windows: verify through the OS trust store (truststore), see config
     try:  # urllib (Last.fm, Deezer, PyPI, models) verifies HTTPS with certifi's CA bundle
         import certifi
         os.environ.setdefault("SSL_CERT_FILE", certifi.where())
@@ -333,21 +398,30 @@ class Cancelled(Exception):
     pass
 
 
-def lock_sizes(lock_text: str) -> dict[str, int]:
-    """Download size per package for this Mac (arm64, CPython 3.12), from uv.lock, so the
-    progress bar can count bytes. Best effort: picks the macOS arm64 / universal wheel, else the
-    pure-Python one, else the sdist."""
+def lock_sizes(lock_text: str, os_name: str = sys.platform, machine: str = platform.machine()) -> dict[str, int]:
+    """Download size per package for this machine (CPython 3.12), from uv.lock, so the progress
+    bar can count bytes. Best effort: picks this OS and CPU's wheel (macOS arm64 / universal2,
+    Windows x64, manylinux x86_64 / aarch64), else the pure-Python one, else the sdist."""
     lock = tomllib.loads(lock_text)
     tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    arm = machine.lower() in ("arm64", "aarch64")
+    if os_name == "darwin":
+        def native(f):
+            return "macosx" in f and ("universal2" in f or ("arm64" if arm else "x86_64") in f)
+    elif os_name == "win32":
+        def native(f):
+            return ("win_arm64" if arm else "win_amd64") in f
+    else:
+        def native(f):
+            return "manylinux" in f and ("aarch64" if arm else "x86_64") in f
     sizes = {}
     for pkg in lock.get("package", []):
         wheels = pkg.get("wheels", [])
 
         def rank(w):
             f = w.get("url", "").rsplit("/", 1)[-1]
-            mac = "macosx" in f and ("arm64" in f or "universal2" in f)
             py = tag in f or "abi3" in f or "-py3-" in f or "-py2.py3-" in f
-            return (mac and py) * 2 + ("none-any" in f)
+            return (native(f) and py) * 2 + ("none-any" in f)
         best = max(wheels, key=rank, default=None)
         size = (best or pkg.get("sdist") or {}).get("size")
         if size:
@@ -414,13 +488,13 @@ class Setup:
         args = ["--no-dev", "--no-install-project"] + (["--reinstall"] if self.repair else [])
         # What this sync will install (a dry run reads only the lock and the venv): the bar's
         # total is the download size of exactly those packages.
-        dry = subprocess.run(uv_cmd(*args, "--dry-run"), env=uv_env(), capture_output=True, text=True)
+        dry = subprocess.run(uv_cmd(*args, "--dry-run"), env=uv_env(), capture_output=True, text=True, **QUIET)
         todo = would_install(dry.stdout + dry.stderr)
         self.pkg_bytes = float(sum(self.sizes.get(n, 0) for n in todo)) or 1.0
         p.step(i, weight=self.pkg_bytes)
         p.add_log("$ uv sync " + " ".join(args))
         self.proc = subprocess.Popen(uv_cmd(*args), env=uv_env(), stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, text=True, bufsize=1)
+                                     stderr=subprocess.STDOUT, text=True, bufsize=1, **QUIET)
         done = 0.0
         active: dict[str, float] = {}
         for line in self.proc.stdout:

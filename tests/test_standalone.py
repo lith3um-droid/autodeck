@@ -50,7 +50,7 @@ def test_dry_run_lists_what_will_be_installed():
     assert st.would_install(out) == {"torch", "yt-dlp"}
 
 
-def test_lock_sizes_pick_the_wheel_for_this_mac():
+def test_lock_sizes_pick_the_wheel_for_this_machine():
     lock = '''
 [[package]]
 name = "torch"
@@ -59,6 +59,7 @@ wheels = [
     { url = "https://x/torch-2.15.0-cp312-cp312-manylinux_2_28_x86_64.whl", size = 900 },
     { url = "https://x/torch-2.15.0-cp312-none-macosx_11_0_arm64.whl", size = 70 },
     { url = "https://x/torch-2.15.0-cp313-none-macosx_11_0_arm64.whl", size = 71 },
+    { url = "https://x/torch-2.15.0-cp312-cp312-win_amd64.whl", size = 80 },
 ]
 
 [[package]]
@@ -72,7 +73,9 @@ name = "proxy-tools"
 version = "0.1.0"
 sdist = { url = "https://x/proxy_tools-0.1.0.tar.gz", size = 2 }
 '''
-    assert st.lock_sizes(lock) == {"torch": 70, "six": 3, "proxy-tools": 2}
+    assert st.lock_sizes(lock, "darwin", "arm64") == {"torch": 70, "six": 3, "proxy-tools": 2}
+    assert st.lock_sizes(lock, "win32", "AMD64") == {"torch": 80, "six": 3, "proxy-tools": 2}
+    assert st.lock_sizes(lock, "linux", "x86_64") == {"torch": 900, "six": 3, "proxy-tools": 2}
 
 
 def test_progress_is_weighted_by_bytes():

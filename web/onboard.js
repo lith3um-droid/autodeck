@@ -102,6 +102,7 @@ async function loadBrowser() {
   try {
     const st = await deps.api('/api/settings');
     $('#ob-browser').value = st.youtube.browser;
+    for (const o of $('#ob-browser').options) if (o.value === 'safari') o.hidden = o.disabled = !!st.youtube.platform && st.youtube.platform !== 'darwin'; // Safari exists only on macOS
     $('#ob-browser').disabled = st.youtube.from_env;
     $('#ob-login').textContent = loginNote(st.youtube.browser);
   } catch { /* the page's offline banner covers it */ }

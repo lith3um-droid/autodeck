@@ -98,7 +98,11 @@ def _device() -> str:
     import torch
 
     # MPS (Apple GPU): ~13 s of model time per 4-min song, and it leaves the CPU to analysis and Rubber Band.
-    # CPU fallback (Intel Macs): ~80 s, still fine for a background job a few songs ahead.
+    # CUDA (an NVIDIA PC with a CUDA build of torch; the PyPI wheel uv.lock installs on Windows is
+    # CPU-only) is as quick. CPU fallback (Intel Macs, Windows by default): ~80 s, still fine for a
+    # background job a few songs ahead.
+    if torch.cuda.is_available():
+        return "cuda"
     return "mps" if torch.backends.mps.is_available() else "cpu"
 
 

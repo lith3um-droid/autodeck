@@ -1,3 +1,4 @@
+import os
 import pytest
 import yt_dlp
 from yt_dlp.utils import DownloadError
@@ -120,7 +121,7 @@ def test_cookie_load_error_type_maps(tmp_library, monkeypatch):
 
 def _writing_ydl(fail):
     class Y:
-        def __init__(self, opts): self.dir = opts["outtmpl"].rsplit("/", 1)[0]
+        def __init__(self, opts): self.dir = os.path.dirname(opts["outtmpl"])
         def __enter__(self): return self
         def __exit__(self, *a): return False
         def download(self, urls):

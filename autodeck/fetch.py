@@ -2,6 +2,7 @@
 import glob
 import os
 import re
+import shutil
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -66,6 +67,18 @@ def _cookie_opts() -> dict:
     if _browser().lower() == "none":
         return {}
     return {"cookiesfrombrowser": (_browser(),)}
+
+
+def _ffmpeg_opts() -> dict:
+    """yt-dlp needs ffmpeg for the Opus remux: the one on PATH (Homebrew, winget, the standalone
+    app's runtime/bin), else the imageio-ffmpeg wheel's binary, which is always installed."""
+    if shutil.which("ffmpeg"):
+        return {}
+    try:
+        import imageio_ffmpeg
+        return {"ffmpeg_location": imageio_ffmpeg.get_ffmpeg_exe()}
+    except Exception:  # no wheel binary for this platform: let yt-dlp report the missing ffmpeg
+        return {}
 
 
 def _short_reason(exc: Exception) -> str:
@@ -144,6 +157,7 @@ def download(song: Song) -> Path:
         "outtmpl": str(d / "dl.%(ext)s"),
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "opus", "preferredquality": "192"}],
         **_cookie_opts(),
+        **_ffmpeg_opts(),
     }
     scratch = d / "dl.opus"
     try:

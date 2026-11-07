@@ -1,7 +1,7 @@
 # autodeck
 
-An auto-DJ for Apple Silicon Macs. Give it a YouTube playlist and it plays the songs as one
-beatmatched mix.
+An auto-DJ for Apple Silicon Macs and Windows PCs. Give it a YouTube playlist and it plays the songs
+as one beatmatched mix.
 
 > **Beta.** Use it at your own risk.
 
@@ -12,10 +12,25 @@ beatmatched mix.
 Get the DMG from [Releases](https://github.com/bvdr/autodeck/releases) and drag autodeck to
 Applications. The first launch downloads about 1.5 GB of audio libraries and models.
 
+Windows (x64): `autodeck-<version>-windows-x64.zip` from this fork's
+[Releases](https://github.com/lith3um-droid/autodeck/releases) when one is published, or build it
+yourself (see *Windows app* below). Unzip anywhere and double-click `autodeck.cmd`.
+
 ## One-time setup
+
+macOS:
 
     brew install uv rubberband ffmpeg
     uv sync
+
+Windows (PowerShell; no Python needed, uv brings its own):
+
+    winget install astral-sh.uv
+    uv sync
+    uv run python scripts/get_rubberband.py   # the Rubber Band CLI: no winget package exists, so this fetches
+                                              # the official build (pinned sha256) into %LOCALAPPDATA%\autodeck\bin
+
+ffmpeg: whatever is on PATH, else the binary from the `imageio-ffmpeg` wheel (so Windows needs none).
 
 `deno` (installed by `uv sync` as the `deno` package, with `yt-dlp-ejs`) is what yt-dlp uses to solve
 YouTube's player challenges; without them yt-dlp warns and some formats are missing.
@@ -24,7 +39,8 @@ YouTube's player challenges; without them yt-dlp warns and some formats are miss
 
     uv run python -m autodeck      # serves http://127.0.0.1:8765 and opens it in the browser
 
-Set `AUTODECK_NO_BROWSER=1` to skip opening the tab.
+Set `AUTODECK_NO_BROWSER=1` to skip opening the tab. `uv run python -m autodeck.desktop` is the same
+engine in a native window instead (WKWebView on macOS, Edge WebView2 on Windows, built into Windows 11).
 
 ## Mac app
 
@@ -76,6 +92,39 @@ notarytool credentials under the keychain profile `autodeck` (`AUTODECK_NOTARY_P
 - **Test it clean:** `AUTODECK_HOME`, `AUTODECK_CACHES` and `AUTODECK_LIBRARY` move every folder the
   app writes, e.g. `env -i HOME=$HOME PATH=/usr/bin:/bin AUTODECK_PORT=8767 AUTODECK_HOME=/tmp/x/home
   AUTODECK_CACHES=/tmp/x/caches AUTODECK_LIBRARY=/tmp/x/lib dist/autodeck.app/Contents/MacOS/autodeck`.
+
+## Windows app
+
+The same two-stage idea as the standalone Mac app, without code signing:
+
+    uv run python scripts/build_standalone_windows.py   # dist/autodeck/ and dist/autodeck-<version>-windows-x64.zip
+
+Unzip, double-click `autodeck.cmd` (Windows asks once whether to run an unsigned download: *More info* →
+*Run anyway*). The first launch opens the same "Setting up autodeck" window and installs about 1.5 GB
+into `%LOCALAPPDATA%\autodeck\` (`runtime\`, `models\`); the library, settings and caches live there too
+(`library\`, `settings.json`, `cache\`), and the log is `%LOCALAPPDATA%\autodeck\logs\autodeck.log`.
+Build requirement: uv with its managed CPython 3.12 (`uv python install 3.12`). Compared with the Mac
+build: nothing is signed, the launcher is a `.cmd` that starts `pythonw.exe` (no console window; child
+tools run hidden), and ffmpeg is a copy of the `imageio-ffmpeg` binary instead of a symlink. `AUTODECK_HOME`,
+`AUTODECK_CACHES` and `AUTODECK_LIBRARY` move every folder the app writes, as on the Mac.
+
+What differs on Windows:
+
+- **No essentia.** essentia ships no Windows wheels, so the three algorithms autodeck uses from it (key
+  detection, the Discogs-EffNet mel front-end, danceability) are numpy ports in `autodeck/compat/`.
+  `tests/test_compat_*.py` compare them with essentia wherever essentia is installed (a Mac) and run the
+  ports' own checks elsewhere.
+- **YouTube login.** Chrome, Edge and Brave on Windows encrypt their cookies in a way yt-dlp often cannot
+  read (app-bound encryption, Chrome 127+). If Liked Music or a private playlist fails with a cookie
+  error, pick **Firefox** or **none** under Settings → YouTube login from. There is no Keychain prompt.
+- **Stems on the GPU.** `uv.lock` installs the CPU build of torch, so htdemucs takes about a minute per
+  song (in the background, a few songs ahead). With an NVIDIA card, install a CUDA build of torch into
+  the venv (`uv pip install --reinstall torch --index-url https://download.pytorch.org/whl/<cuda tag pytorch.org lists>`)
+  and autodeck uses it.
+- **HTTPS trust.** Downloads (models, Last.fm, Deezer, PyPI) verify through Windows' own certificate
+  store (`truststore`): Python's bundled OpenSSL could not complete essentia.upf.edu's certificate chain.
+- **Data paths.** `%LOCALAPPDATA%\autodeck` instead of `~/Library/Application Support/autodeck`; the
+  Settings dialog shows the exact folder. (Linux: `~/.local/share/autodeck`, caches in `~/.cache/autodeck`.)
 
 ## First run
 
@@ -329,6 +378,7 @@ Both switches are saved in `settings.json` (default: on, Steer the session).
                                                      # (a -m on the command line replaces the default, so keep "not network")
     AUTODECK_BROWSER=none uv run pytest -m network   # hits real YouTube, public content only
     node --test web/*.test.mjs   # transition timing, section loops, stems switch, lane geometry, drag drop index
+                                 # (PowerShell doesn't expand the glob: node --test (Get-ChildItem web/*.test.mjs))
 
 ## Known limits
 

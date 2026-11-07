@@ -1,7 +1,9 @@
 """Paths and spec constants. Everything tunable lives here."""
 import json
 import os
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 # Spec values (see docs/superpowers/specs/2026-10-30-autodeck-design.md)
@@ -23,12 +25,33 @@ DEFAULT_GENRES = ["Pop", "Hip-hop", "Romanian hip-hop", "Romanian sârbe"]
 ANY_GENRE = "Any"  # pseudo-genre: no filtering
 
 
-# Where a Mac app keeps its data (Apple's convention), not a loose folder in the home dir:
-#   ~/Library/Application Support/autodeck/library  songs, analyses, moods, session, history, models
-#   ~/Library/Caches/autodeck                         Last.fm / Deezer lookups (safe to delete)
-# Outside the repo on purpose: audio must never be committed.
-APP_SUPPORT = Path.home() / "Library" / "Application Support" / "autodeck"
-CACHES = Path.home() / "Library" / "Caches" / "autodeck"
+# Where the app keeps its data: each OS's own convention, not a loose folder in the home dir,
+# and outside the repo on purpose (audio must never be committed).
+#   data    library/ (songs, analyses, moods, session, history, models), settings.json, the
+#           standalone app's runtime/ and models/
+#   caches  Last.fm / Deezer lookups, uv's package cache, numba/torch caches (safe to delete)
+#   logs    autodeck.log of the desktop window and the standalone app
+#   macOS    ~/Library/Application Support/autodeck   ~/Library/Caches/autodeck    ~/Library/Logs
+#   Windows  %LOCALAPPDATA%\autodeck                  %LOCALAPPDATA%\autodeck\cache  %LOCALAPPDATA%\autodeck\logs
+#   Linux    $XDG_DATA_HOME/autodeck (~/.local/share) $XDG_CACHE_HOME/autodeck      $XDG_STATE_HOME/autodeck
+
+
+def _platform_dirs() -> tuple[Path, Path, Path]:
+    """(data, caches, logs) for this OS."""
+    home = Path.home()
+    if sys.platform == "darwin":
+        lib = home / "Library"
+        return lib / "Application Support" / "autodeck", lib / "Caches" / "autodeck", lib / "Logs"
+    if sys.platform == "win32":
+        local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+        return local / "autodeck", local / "autodeck" / "cache", local / "autodeck" / "logs"
+    data = Path(os.environ.get("XDG_DATA_HOME") or home / ".local" / "share")
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or home / ".cache")
+    state = Path(os.environ.get("XDG_STATE_HOME") or home / ".local" / "state")
+    return data / "autodeck", cache / "autodeck", state / "autodeck"
+
+
+APP_SUPPORT, CACHES, LOGS = _platform_dirs()
 LEGACY_LIBRARY = Path.home() / "autodeck-library"  # before 2026-10-31
 
 
@@ -46,9 +69,9 @@ def cache_root() -> Path:
 
 
 def migrate_legacy_library() -> str | None:
-    """Move a pre-2026-10-31 ~/autodeck-library to the Mac location, once, at startup.
+    """Move a pre-2026-10-31 ~/autodeck-library to the app's data folder, once, at startup.
     A rename on the same disk: instant, no copy, nothing duplicated. The lookup caches go to
-    ~/Library/Caches. Returns a message when something moved."""
+    the caches folder. Returns a message when something moved."""
     if os.environ.get("AUTODECK_LIBRARY") or not LEGACY_LIBRARY.is_dir():
         return None
     new = library_root()
@@ -82,6 +105,43 @@ def caches_dir() -> Path:
     return Path(os.environ.get("AUTODECK_CACHES") or CACHES)
 
 
+def log_file() -> Path:
+    """autodeck.log: the desktop window and the standalone app log there (no terminal)."""
+    return LOGS / "autodeck.log"
+
+
+def tools_dir() -> Path:
+    """Command-line tools autodeck needs that no package manager provides on this OS, put
+    there by scripts/get_rubberband.py (Windows: rubberband.exe + sndfile.dll). The standalone
+    app ships its own copy in its resources instead."""
+    return app_home() / "bin"
+
+
+def ensure_tools_on_path() -> None:
+    """Prepend tools_dir() to PATH once, so pyrubberband's `rubberband` call finds it."""
+    d = tools_dir()
+    if d.is_dir() and str(d) not in os.environ.get("PATH", "").split(os.pathsep):
+        os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+
+
+def ensure_ca_bundle() -> None:
+    """Windows: verify HTTPS (urllib: model downloads, Last.fm, Deezer, PyPI) through the OS trust
+    store. The uv-managed Python verifies with OpenSSL against the roots Windows has cached (and
+    certifi's list, in the standalone app), and the Discogs model download from essentia.upf.edu
+    failed that way: its chain ends in a HARICA root neither resolved, while Windows' own stack
+    (SChannel) fetches what it is missing. truststore, what pip uses, makes Python's ssl do the
+    same. A no-op elsewhere: macOS works as before."""
+    if sys.platform != "win32":
+        return
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+    except ImportError:  # first launch of the standalone app, before the packages: nothing to download yet
+        pass
+    # The Hugging Face cache can't symlink without developer mode and says so twice, loudly; it works regardless.
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+
 def installed_model(name: str) -> Path | None:
     """A model the standalone app's setup downloaded (models/ in app_home()), so analysis never
     downloads at song time. None when absent (dev): callers then download as before."""
@@ -109,7 +169,16 @@ def write_json_atomic(path: Path, data) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, path)
+        for attempt in range(50):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                # Windows: replacing a file that another thread is reading or replacing at that very
+                # moment is refused (no FILE_SHARE_DELETE), not queued. Both are over in a moment.
+                if attempt == 49:
+                    raise
+                time.sleep(0.01)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise

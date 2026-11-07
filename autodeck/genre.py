@@ -121,7 +121,10 @@ def _middle(y: np.ndarray, seconds: int) -> np.ndarray:
 
 
 def _styles(y: np.ndarray) -> list[str]:
-    import essentia.standard as es
+    try:
+        import essentia.standard as es
+    except ImportError:  # no wheels on Windows: autodeck.compat ports the mel front-end
+        es = None
 
     if "styles" in _unavailable:
         raise RuntimeError("style model unavailable (earlier failure)")
@@ -131,10 +134,15 @@ def _styles(y: np.ndarray) -> list[str]:
         _unavailable.add("styles")
         raise
     y = _middle(y, SNIPPET_S).astype(np.float32)
-    # Plain essentia (no TF) ships the exact mel front-end these models were trained with.
-    frame = es.FrameGenerator
-    mel = es.TensorflowInputMusiCNN()
-    frames = np.array([mel(f) for f in frame(y, frameSize=512, hopSize=256, startFromZero=True, validFrameThresholdRatio=1)], dtype=np.float32)
+    # Plain essentia (no TF) ships the exact mel front-end these models were trained with;
+    # compat.musicnn is a port of it, checked against essentia frame by frame.
+    if es is not None:
+        frame = es.FrameGenerator
+        mel = es.TensorflowInputMusiCNN()
+        frames = np.array([mel(f) for f in frame(y, frameSize=512, hopSize=256, startFromZero=True, validFrameThresholdRatio=1)], dtype=np.float32)
+    else:
+        from .compat.musicnn import mel_frames
+        frames = mel_frames(y)
     if len(frames) < PATCH:  # very short audio: pad with the floor value rather than fail
         frames = np.vstack([frames, np.zeros((PATCH - len(frames), frames.shape[1]), np.float32)]) if len(frames) else np.zeros((PATCH, 96), np.float32)
     patches = np.stack([frames[i : i + PATCH] for i in range(0, len(frames) - PATCH + 1, PATCH_HOP)])
